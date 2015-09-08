@@ -1,0 +1,167 @@
+#!/usr/bin/env python
+#
+# hdoc - Open browser on Haskell documentation for a library package.
+#
+# Try these examples:
+#
+#   hdoc binary
+#   hdoc bin
+#
+# hdoc stores information in the following files:
+#
+#  ~/.hdoc_packages   - list of current library packages
+#  ~/.hdoc_urls       - cache of where the All index page is for a package
+
+import sys
+import os
+import re
+from os.path import expanduser
+
+from bs4 import BeautifulSoup
+import requests
+import argparse
+
+HACKAGE_DOC_BASEURL = "https://hackage.haskell.org/package/"
+
+def download_package_list(pkgNamesPath):
+  url = "https://hackage.haskell.org/packages/names"
+  r = requests.get(url)
+  if r.status_code <> 200:
+    sys.write("Unable to fetch " + url + " - HTTP status: " + str(r.status_code) + "\n")
+    sys.exit(1)
+
+  allnames = []
+  for name, url, tags in parse_packages(r.text):
+    if 'library' in tags:
+      allnames.append(name) 
+
+  with open(pkgNamesPath, "w") as f:
+    for name in allnames:
+      f.write(name + "\n")
+  return len(allnames)
+
+def parse_packages(html):
+  """A generator for the package names in the "All packages by name" page."""
+  soup = BeautifulSoup(html, 'html.parser')
+  uls = soup.find_all("ul", {"class": "packages" })
+  for ul in uls:
+    name = None
+    url = None
+    tags = set()
+    for a in ul.find_all("a"):
+      href = a['href']
+      m = re.match("/package/(.*)", href)
+      if m:
+        if name:
+          yield (name, url, tags)
+        name = m.group(1)
+        url = href
+        tags = set()
+      else:
+        m = re.match("/packages/tag/(.*)", href)
+        if m:
+          tags.add(m.group(1))
+    if name:
+      yield (name, url, tags)
+
+def test():
+  with open("packages.html", "r") as f:
+    content = f.read()
+  for name, url, tags in parse_packages(content):
+    if "library" in tags:
+      print name
+
+def find_package_index(pkgIndexPath, pkgName):
+  """Return the index url for a package from an index file."""
+  try:
+    with open(pkgIndexPath, "r") as f:
+      for line in f:
+        line = line.rstrip()
+        (p, i) = line.split(' ', 2)
+        if p == pkgName:
+          return HACKAGE_DOC_BASEURL + i
+    return None
+  except EnvironmentError:
+    return None
+
+def determine_package_index(pkgName):
+  docurl = pkgName + "/docs/doc-index-All.html"
+  url = HACKAGE_DOC_BASEURL + docurl
+  r = requests.get(url)
+  if r.status_code == 200:
+    return docurl, url
+  docurl = pkgName + "/docs/doc-index.html"
+  url = HACKAGE_DOC_BASEURL + docurl
+  return docurl, url
+
+def update_package_url(pkgIndexPath, pkgname, url):
+  with open(pkgIndexPath, "a") as f:
+    f.write("{} {}\n".format(pkgname, url))
+
+def open_pkg_index(pkgNamesPath, pkgIndexPath, pkg, dryrun):
+  # Determine if pkg is unique
+  lcpkg = pkg.lower()
+  matches = []
+  exactMatch = False
+  with open(pkgNamesPath, "r") as f:
+    for line in f:
+      line = line.rstrip()
+      if lcpkg in line.lower():
+        matches.append(line)
+        if lcpkg == line.lower():
+          exactMatch = line
+
+  if exactMatch:
+    pkgname = exactMatch
+  elif len(matches) == 1:
+    pkgname = matches[0]
+  else:
+    pkgname = None
+  
+  if pkgname:
+    url = find_package_index(pkgIndexPath, pkgname)
+    if not url:
+      docurl, url = determine_package_index(pkgname)
+      update_package_url(pkgIndexPath, pkgname, docurl)
+    print "+ open " + url
+    if not dryrun:
+      os.system("open " + url)
+  elif len(matches) > 1:
+    print "Matching packages:"
+    for m in matches:
+      print "  {}".format(m)
+    sys.exit(1)
+  else:
+    print "No matches for '{}'".format(pkg)
+    sys.exit(1)
+
+def main():
+  parser = argparse.ArgumentParser(description='Open Haskell documentation')
+  parser.add_argument('-n', dest='dryrun', action='store_true', help='Just emit the open command')
+  parser.add_argument('-d', '--download-package-list', dest='download_packages', action='store_true', help='Download package list')
+  parser.add_argument('search', nargs=argparse.REMAINDER, help='search terms')
+  opts = parser.parse_args()
+
+  didSomething = False
+
+  home = expanduser("~")
+  pkgNamesPath = os.path.join(home, ".hdoc_packages")
+
+  needPackages = opts.search and not os.path.isfile(pkgNamesPath)
+
+  if needPackages or opts.download_packages:
+    didSomething = True
+    print "Downloading package names..."
+    count = download_package_list(pkgNamesPath)
+    print "Library packages:", count
+
+  if not didSomething and not opts.search:
+    sys.stderr.write("No search term provided.\n")
+    sys.exit(1)
+  if opts.search:
+    pkgIndexPath = os.path.join(home, ".hdoc_urls")
+    search = opts.search[0]
+    open_pkg_index(pkgNamesPath, pkgIndexPath, search, opts.dryrun)
+
+main()
+
