@@ -11,3 +11,7 @@ You only need to type a unique substring (case-insensitive) of
 the package name. `hdoc` will list all matching package names
 if the substring is not unique.
 
+Installation
+===
+
+    python setup.py install
